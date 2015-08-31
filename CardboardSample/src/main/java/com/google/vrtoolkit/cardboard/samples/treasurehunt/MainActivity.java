@@ -22,12 +22,18 @@ import com.google.vrtoolkit.cardboard.Eye;
 import com.google.vrtoolkit.cardboard.HeadTransform;
 import com.google.vrtoolkit.cardboard.Viewport;
 
+import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.opengl.GLES20;
 import android.opengl.Matrix;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Message;
 import android.os.Vibrator;
 import android.util.Log;
+import android.widget.Toast;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -104,6 +110,10 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
 
   private Vibrator vibrator;
   private CardboardOverlayView overlayView;
+  private BluetoothAdapter mBluetoothAdapter;
+  private BluetoothCommService mCommService;
+  private String mConnectedDeviceName;
+  private final float[] mPointerMatrix = new float[16];
 
   /**
    * Converts a raw text file, saved as a resource, into an OpenGL ES shader.
@@ -172,9 +182,79 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     headView = new float[16];
     vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
 
+    // Get local Bluetooth adapter
+    mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+    String address = null;
+    if (savedInstanceState == null) {
+      Bundle extras = getIntent().getExtras();
+      if (extras != null) {
+        address = extras.getString(DeviceListActivity.EXTRA_DEVICE_ADDRESS);
+      }
+    } else {
+      address = (String) savedInstanceState
+              .getSerializable(DeviceListActivity.EXTRA_DEVICE_ADDRESS);
+    }
+    if (address == null) {
+      Toast.makeText(this, "Could not retrieve device address", Toast.LENGTH_LONG).show();
+      finish();
+    }
+    setupComm(address);
+
 
     overlayView = (CardboardOverlayView) findViewById(R.id.overlay);
     overlayView.show3DToast("Pull the magnet when you find an object.");
+  }
+
+  @Override
+  public void onDestroy() {
+    super.onDestroy();
+    if (mCommService != null) {
+      mCommService.stop();
+    }
+  }
+
+  private void setupComm(String address) {
+    // Initialize the BluetoothChatService to perform bluetooth connections
+    mCommService = new BluetoothCommService(mHandler);
+    BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
+    // Attempt to connect to the device
+    mCommService.connect(device);
+  }
+
+  @SuppressLint("HandlerLeak")
+  private final Handler mHandler = new Handler() {
+    @Override
+    public void handleMessage(Message msg) {
+      switch (msg.what) {
+        case BluetoothCommService.MESSAGE_READ:
+          ByteBuffer readBuf = (ByteBuffer) msg.obj;
+          processSensor(readBuf);
+          break;
+        case BluetoothCommService.MESSAGE_DEVICE_NAME:
+          // save the connected device's name
+          mConnectedDeviceName = msg.getData().getString(BluetoothCommService.DEVICE_NAME);
+          overlayView.show3DToast("Connected to " + mConnectedDeviceName);
+          break;
+        case BluetoothCommService.MESSAGE_TOAST:
+          overlayView.show3DToast (msg.getData().getString(BluetoothCommService.TOAST));
+          break;
+      }
+    }
+  };
+
+  private void processSensor(ByteBuffer readBuf) {
+    while (readBuf.hasRemaining()) {
+      byte type = readBuf.get();
+      switch (type) {
+        case 'M':
+          for (int i=0; i<16; i++)
+            mPointerMatrix[i] = readBuf.getFloat();
+          break;
+        default:
+          Log.e(TAG, "Invalid BT reading received");
+          break;
+      }
+    }
   }
 
   @Override
@@ -335,7 +415,10 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
   @Override
   public void onNewFrame(HeadTransform headTransform) {
     // Build the Model part of the ModelView matrix.
-    Matrix.rotateM(modelCube, 0, TIME_DELTA, 0.5f, 0.5f, 1.0f);
+//    Matrix.rotateM(modelCube, 0, TIME_DELTA, 0.5f, 0.5f, 1.0f);
+
+    Matrix.invertM(modelCube, 0, mPointerMatrix, 0);
+    Matrix.translateM(modelCube, 0, 0, 0, -5);
 
     // Build the camera matrix and apply it to the ModelView.
     Matrix.setLookAtM(camera, 0, 0.0f, 0.0f, CAMERA_Z, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
